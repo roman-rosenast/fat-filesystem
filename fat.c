@@ -35,6 +35,9 @@ struct sblock {
     size_t              blocks_per_file; /* How big each file is, in blocks */
     block_t             files_start;    /* First block of first file */
     size_t              next_file_no;   /* Next file number to use */
+
+    ???                 block_table;    /* TODO: This should be a SET of LINKED LISTS of block_t. This is the FAT */
+    ???                 free_list;      /* TODO: This should be a LINKED LIST of block_t. This is what we use to find the next free block. */
 };
 
 static union {
@@ -166,6 +169,87 @@ static void fetch_dirblock(size_t block)
 static void flush_dirblock()
 {
     write_block(dirblock, dirbuf);
+}
+
+static void* fuse_fat_init(struct fuse_conn_info *conn)
+{
+    size_t              size;
+
+    /*
+     * Read superblock, if it exists.  We don't use read_block
+     * because if we just created the backing file, the read will fail
+     * and we'll need to initialize the backing file.
+     */
+    assert(lseek(backing_file_fd, 0, SEEK_SET) != -1);
+    size = read(backing_file_fd, &superblock, sizeof superblock);
+    if (size == sizeof superblock
+       &&  superblock.s.magic == FAT_MAGIC_LITTLE_ENDIAN) {
+        /*
+         * The backing file exists and is valid. Create a buffer for
+         * holding directory blocks.  We don't need to fill it.
+         */
+        dirbuf = (fat_dirent*)calloc(superblock.s.block_size, 1);
+        dirend = (fat_dirent*)((char *)dirbuf + superblock.s.block_size);
+        return NULL;
+    }
+    /*
+     * The filesystem doesn't exist.  Make it.
+     *
+     * Create superblock.
+     */
+    memset(&superblock, 0, sizeof superblock);
+    superblock.s.magic = FAT_MAGIC_LITTLE_ENDIAN;
+    superblock.s.total_blocks = DISK_SIZE / BLOCK_SIZE;
+    superblock.s.block_size = BLOCK_SIZE;
+    superblock.s.blocks_per_file = BLOCKS_PER_FILE;
+
+    /*
+     * The root directory always starts just past the superblock,
+     * and has file number 1.  So the next available file number is 2.
+     */
+    superblock.s.files_start = sizeof(superblock) / superblock.s.block_size;
+    superblock.s.next_file_no = 2;
+
+    /*
+     * Create an initial root directory and write it to disk.  We
+     * depend on the fact that calloc zeros the memory it allocates,
+     * and the fact that TYPE_EMPTY is zero.
+     */
+    dirbuf = (fat_dirent*)calloc(superblock.s.block_size, 1);
+    dirend = (fat_dirent*)((char *)dirbuf + superblock.s.block_size);
+
+    dirblock = superblock.s.files_start;
+    dirbuf[0].type = TYPE_DIR;
+    dirbuf[0].file_no = 1;
+    dirbuf[0].size = DIR_SIZE * DIRENT_LENGTH;
+    dirbuf[0].namelen = 1;
+    memcpy(dirbuf[0].name, ".", 1);
+
+    dirbuf[1].type = TYPE_DIR;
+    dirbuf[1].file_no = 1;
+    dirbuf[1].size = DIR_SIZE * DIRENT_LENGTH;
+    dirbuf[1].namelen = 2;
+    memcpy(dirbuf[1].name, "..", 2);
+    write_block(superblock.s.files_start, dirbuf);
+
+    /*
+     * The rest of the code will be simpler if the backing file is the
+     * size of the "true" disk.  We can do that with truncate.  We
+     * deliberately don't check the return code because you can't
+     * truncate a real device.
+     */
+    ftruncate(backing_file_fd, DISK_SIZE);
+
+    /*
+     * Finally, write the superblock to disk.  We write it last so
+     * that if we crash, the disk won't appear valid.
+     */
+    flush_superblock();
+
+    /*
+     * We're expected to return a pointer to user data; we have none.
+     */
+    return NULL;
 }
 
 /*
@@ -433,6 +517,7 @@ doublebreak:
 }
 
 static struct fuse_operations fuse_fat_oper = {
+        .init           = fuse_fat_init,
         .getattr        = fuse_fat_getattr,
         .fgetattr       = fuse_fat_fgetattr,
         .access         = fuse_fat_access,
