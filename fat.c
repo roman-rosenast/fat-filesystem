@@ -19,6 +19,7 @@
 #define BLOCK_SIZE      4096
 #define BLOCKS_PER_FILE 100             /* Maximum file size, in blocks */
 #define MAX_FILES       100             /* Maximum number of files supported */
+#define MAX_BLOCKS      MAX_FILES * BLOCKS_PER_FILE
 #define DISK_SIZE       ((1 + BLOCKS_PER_FILE * MAX_FILES) * BLOCK_SIZE)
 
 typedef size_t          block_t;        /* Block-address type */
@@ -36,8 +37,8 @@ struct sblock {
     block_t             files_start;    /* First block of first file */
     size_t              next_file_no;   /* Next file number to use */
 
-    ???                 block_table;    /* TODO: This should be a SET of LINKED LISTS of block_t. This is the FAT */
-    ???                 free_list;      /* TODO: This should be a LINKED LIST of block_t. This is what we use to find the next free block. */
+    short               block_table[MAX_BLOCKS];
+    bool                *free_list;
 };
 
 static union {
